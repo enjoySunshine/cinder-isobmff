@@ -808,6 +808,13 @@ export class ISOFile<TSegmentUser = unknown, TSampleUser = unknown> {
             // Check if the sample is a RAP (Random Access Point)
             const isRAP = !fragTrak.rapAlignement || sample.is_sync;
 
+            /* Check if the next sample does not continue the decode timeline of this one.
+               A fragment can only represent a continuous decode time range (a single tfdt
+               plus per-sample durations), so it must end at a discontinuity */
+            const nextSample = trak.samples[trak.nextSample + 1];
+            const isDiscontinuityBoundary =
+              nextSample !== undefined && sample.dts + sample.duration !== nextSample.dts;
+
             // During flush, we create a fragment even if we are not at a boundary
             const isFlush = last || trak.nextSample + 1 >= trak.samples.length;
             if (isFlush && !isRAP) {
@@ -825,6 +832,10 @@ export class ISOFile<TSegmentUser = unknown, TSampleUser = unknown> {
             isFragmentBoundary = isFragmentBoundary && isRAP;
             isSegmentBoundary = isSegmentBoundary && isRAP;
             isSizeBoundary = isSizeBoundary && isRAP;
+
+            /* A discontinuity in the decode timeline always ends the fragment,
+               regardless of RAP alignment, so that the next fragment gets a new tfdt */
+            isFragmentBoundary = isFragmentBoundary || isDiscontinuityBoundary;
 
             // Create a fragment if needed
             if (isFragmentBoundary || isSizeBoundary || isFlush) {
@@ -1914,18 +1925,17 @@ export class ISOFile<TSegmentUser = unknown, TSampleUser = unknown> {
               trak.samples_duration += duration;
 
               let dts: number;
-              if (trak.first_traf_merged || k > 0) {
+              if (traf.sample_number === 0 && traf.tfdt) {
+                /* the tfdt box indicates the decode time of the first sample of the fragment */
+                dts = traf.tfdt.baseMediaDecodeTime;
+              } else if (trak.first_traf_merged || traf.sample_number > 0) {
                 dts =
                   trak.samples[trak.samples.length - 1].dts +
                   trak.samples[trak.samples.length - 1].duration;
               } else {
-                if (traf.tfdt) {
-                  dts = traf.tfdt.baseMediaDecodeTime;
-                } else {
-                  dts = 0;
-                }
-                trak.first_traf_merged = true;
+                dts = 0;
               }
+              trak.first_traf_merged = true;
 
               let cts = dts;
               if (trun.flags & TRUN_FLAGS_CTS_OFFSET) {
@@ -2021,8 +2031,10 @@ export class ISOFile<TSegmentUser = unknown, TSampleUser = unknown> {
           this.samplesDataSize +
           ')',
       );
-    } else if (sample.alreadyRead === sample.size) {
-      /* Already fetched entirely */
+    }
+    if (sample.alreadyRead === sample.size) {
+      /* Already fetched entirely (this also covers zero-size samples,
+         which need no data lookup) */
       return sample;
     }
 
@@ -3042,6 +3054,12 @@ export class ISOFile<TSegmentUser = unknown, TSampleUser = unknown> {
       trun.sample_size.push(sample.size);
       trun.sample_flags.push(sample_flags);
       trun.sample_composition_time_offset.push(sample.cts - sample.dts);
+    }
+
+    /* version 1 is needed to represent negative composition time offsets,
+       version 0 stores them as unsigned values */
+    if (trun.sample_composition_time_offset.some(offset => offset < 0)) {
+      trun.version = 1;
     }
 
     return moof;

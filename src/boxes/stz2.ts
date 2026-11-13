@@ -36,4 +36,34 @@ export class stz2Box extends FullBox {
       }
     }
   }
+
+  /** @bundle writing/stz2.js */
+  write(stream: MultiBufferStream) {
+    this.version = 0;
+    this.flags = 0;
+    const sample_count = this.sample_sizes ? this.sample_sizes.length : 0;
+    this.size = 8; /* reserved(3) + field_size(1) + sample_count(4) */
+    if (this.field_size === 4) {
+      this.size += Math.ceil(sample_count / 2);
+    } else if (this.field_size === 8) {
+      this.size += sample_count;
+    } else if (this.field_size === 16) {
+      this.size += 2 * sample_count;
+    }
+    this.writeHeader(stream);
+    stream.writeUint24(this.reserved ?? 0);
+    stream.writeUint8(this.field_size);
+    stream.writeUint32(sample_count);
+    if (this.field_size === 4) {
+      for (let i = 0; i < sample_count; i += 2) {
+        stream.writeUint8(
+          ((this.sample_sizes[i] & 0x0f) << 4) | ((this.sample_sizes[i + 1] ?? 0) & 0x0f),
+        );
+      }
+    } else if (this.field_size === 8) {
+      stream.writeUint8Array(this.sample_sizes);
+    } else if (this.field_size === 16) {
+      stream.writeUint16Array(this.sample_sizes);
+    }
+  }
 }
